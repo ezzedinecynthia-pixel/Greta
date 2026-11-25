@@ -210,14 +210,22 @@ class GretaService : Service(), TextToSpeech.OnInitListener {
         val body = JSONObject()
             .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sys))))
             .put("contents", msgs).put("tools", tools())
-        val c = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent").openConnection() as HttpURLConnection
-        c.requestMethod = "POST"; c.doOutput = true; c.connectTimeout = 15000; c.readTimeout = 90000
-        c.setRequestProperty("content-type", "application/json"); c.setRequestProperty("x-goog-api-key", key)
-        c.outputStream.use { it.write(body.toString().toByteArray()) }
-        val ok = c.responseCode in 200..299
-        val s = (if (ok) c.inputStream else c.errorStream).bufferedReader().readText()
-        if (!ok) throw RuntimeException("API error ${c.responseCode}: " + (try { JSONObject(s).getJSONObject("error").getString("message") } catch (e: Exception) { s.take(150) }))
-        return JSONObject(s)
+        var lastErr = "unknown"
+        for (attempt in 0..3) {
+            val model = if (attempt < 3) "gemini-flash-latest" else "gemini-flash-lite-latest"
+            val c = URL("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent").openConnection() as HttpURLConnection
+            c.requestMethod = "POST"; c.doOutput = true; c.connectTimeout = 15000; c.readTimeout = 90000
+            c.setRequestProperty("content-type", "application/json"); c.setRequestProperty("x-goog-api-key", key)
+            c.outputStream.use { it.write(body.toString().toByteArray()) }
+            val code = c.responseCode
+            val ok = code in 200..299
+            val s = (if (ok) c.inputStream else c.errorStream).bufferedReader().readText()
+            if (ok) return JSONObject(s)
+            lastErr = "API error $code: " + (try { JSONObject(s).getJSONObject("error").getString("message") } catch (e: Exception) { s.take(150) })
+            if (code != 503 && code != 429 && code != 500) break
+            Thread.sleep(1500L * (attempt + 1))
+        }
+        throw RuntimeException(lastErr)
     }
 
     private fun callGemini(): String {
